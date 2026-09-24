@@ -1,0 +1,13 @@
+{
+  "dataset": "campaigns",
+  "policies": [
+    {
+      "table": "audience_segments",
+      "policy_name": "region_filter",
+      "filter_expression": "region = SESSION_USER()",
+      "grantees": [
+        "group:data-analysts@example.com"
+      ]
+    }
+  ]
+}

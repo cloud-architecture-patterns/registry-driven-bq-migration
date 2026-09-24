@@ -1,0 +1,19 @@
+name: BQ Migration — APPA Campaigns (Example)
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: Migration config YAML path
+        required: true
+        default: config/migrations/appa-campaigns.yml
+
+# The environment name must match the registry's gha_environment value.
+# GitHub will require a manual approval from an environment reviewer before the job runs.
+environment: appa-migration
+
+jobs:
+  migrate:
+    uses: ./.github/workflows/_bq-migrate.yml
+    with:
+      config_file: ${{ inputs.config_file }}

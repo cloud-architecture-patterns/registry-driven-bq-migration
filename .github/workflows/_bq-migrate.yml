@@ -1,0 +1,123 @@
+name: BQ Migration (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      config_file:
+        description: Path to the migration config YAML (e.g. config/migrations/appa-campaigns.yml)
+        required: true
+        type: string
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read migration config
+        id: config
+        run: |
+          APPCODE=$(yq '.appcode' "${{ inputs.config_file }}")
+          SOURCE_PROJECT=$(yq '.source.project' "${{ inputs.config_file }}")
+          SOURCE_DATASET=$(yq '.source.dataset' "${{ inputs.config_file }}")
+          DEST_PROJECT=$(yq '.destination.project' "${{ inputs.config_file }}")
+          DEST_DATASET=$(yq '.destination.dataset' "${{ inputs.config_file }}")
+          echo "appcode=$APPCODE" >> "$GITHUB_OUTPUT"
+          echo "source_project=$SOURCE_PROJECT" >> "$GITHUB_OUTPUT"
+          echo "source_dataset=$SOURCE_DATASET" >> "$GITHUB_OUTPUT"
+          echo "dest_project=$DEST_PROJECT" >> "$GITHUB_OUTPUT"
+          echo "dest_dataset=$DEST_DATASET" >> "$GITHUB_OUTPUT"
+
+      - name: Load APPCODE registry
+        id: registry
+        run: |
+          APPCODE_LOWER=$(echo "${{ steps.config.outputs.appcode }}" | tr '[:upper:]' '[:lower:]')
+          REGISTRY="config/appcodes/${APPCODE_LOWER}.yml"
+          if [[ ! -f "$REGISTRY" ]]; then
+            echo "ERROR: registry file $REGISTRY not found" >&2
+            exit 1
+          fi
+          SA_EMAIL=$(yq '.sa_email' "$REGISTRY")
+          WIF_PROVIDER=$(yq '.wif_provider' "$REGISTRY")
+          GHA_ENV=$(yq '.gha_environment' "$REGISTRY")
+          ALLOWED_SOURCE=$(yq '.allowed_source_projects[]' "$REGISTRY" | tr '\n' ',')
+          ALLOWED_DEST=$(yq '.allowed_destination_projects[]' "$REGISTRY" | tr '\n' ',')
+          GCS_BUCKET=$(yq '.gcs_landing_bucket' "$REGISTRY")
+          echo "sa_email=$SA_EMAIL" >> "$GITHUB_OUTPUT"
+          echo "wif_provider=$WIF_PROVIDER" >> "$GITHUB_OUTPUT"
+          echo "gha_environment=$GHA_ENV" >> "$GITHUB_OUTPUT"
+          echo "allowed_source=$ALLOWED_SOURCE" >> "$GITHUB_OUTPUT"
+          echo "allowed_dest=$ALLOWED_DEST" >> "$GITHUB_OUTPUT"
+          echo "gcs_bucket=$GCS_BUCKET" >> "$GITHUB_OUTPUT"
+
+      - name: Pre-flight — project allowlist check
+        run: |
+          bash scripts/pre_copy_validate.sh \
+            --source-project "${{ steps.config.outputs.source_project }}" \
+            --dest-project "${{ steps.config.outputs.dest_project }}" \
+            --allowed-source "${{ steps.registry.outputs.allowed_source }}" \
+            --allowed-dest "${{ steps.registry.outputs.allowed_dest }}"
+
+      # WIF token exchange — environment attribute prevents cross-APPCODE impersonation.
+      # The protected environment name matches the registry's gha_environment field.
+      - name: Authenticate via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.registry.outputs.wif_provider }}
+          service_account: ${{ steps.registry.outputs.sa_email }}
+
+      - name: Set up gcloud / bq
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Pre-flight — allow-list manifest check
+        run: |
+          bash scripts/pre_copy_validate.sh \
+            --mode allow-list \
+            --source-project "${{ steps.config.outputs.source_project }}" \
+            --source-dataset "${{ steps.config.outputs.source_dataset }}" \
+            --manifest "config/approved_tables/${{ steps.config.outputs.source_dataset }}.json"
+
+      - name: Pre-flight — schema drift check
+        run: |
+          bash scripts/validate_schema_drift.sh \
+            --project "${{ steps.config.outputs.source_project }}" \
+            --dataset "${{ steps.config.outputs.source_dataset }}" \
+            --baseline-dir ".schema-baselines"
+
+      - name: Copy data to staging dataset
+        run: |
+          STAGING="${{ steps.config.outputs.dest_dataset }}_staging"
+          APPROVED_TABLES=$(jq -r '.approved_tables[]' \
+            "config/approved_tables/${{ steps.config.outputs.source_dataset }}.json")
+          for TABLE in $APPROVED_TABLES; do
+            bq cp --force \
+              "${{ steps.config.outputs.source_project }}:${{ steps.config.outputs.source_dataset }}.${TABLE}" \
+              "${{ steps.config.outputs.dest_project }}:${STAGING}.${TABLE}"
+          done
+
+      - name: Post-copy — apply row-level security
+        run: |
+          bash scripts/bq_apply_rls.sh \
+            --project "${{ steps.config.outputs.dest_project }}" \
+            --dataset "${{ steps.config.outputs.dest_dataset }}_staging" \
+            --rls-file "config/rls/${{ steps.config.outputs.source_dataset }}.json"
+
+      - name: Post-copy — destination scan (deny-list check)
+        run: |
+          bash scripts/pre_copy_validate.sh \
+            --mode deny-check \
+            --dest-project "${{ steps.config.outputs.dest_project }}" \
+            --dest-dataset "${{ steps.config.outputs.dest_dataset }}_staging" \
+            --manifest "config/approved_tables/${{ steps.config.outputs.source_dataset }}.json"
+
+      - name: Promote staging to live dataset
+        run: |
+          STAGING="${{ steps.config.outputs.dest_dataset }}_staging"
+          APPROVED_TABLES=$(jq -r '.approved_tables[]' \
+            "config/approved_tables/${{ steps.config.outputs.source_dataset }}.json")
+          for TABLE in $APPROVED_TABLES; do
+            bq cp --force \
+              "${{ steps.config.outputs.dest_project }}:${STAGING}.${TABLE}" \
+              "${{ steps.config.outputs.dest_project }}:${{ steps.config.outputs.dest_dataset }}.${TABLE}"
+          done
+          bq rm -f -r "${{ steps.config.outputs.dest_project }}:${STAGING}"

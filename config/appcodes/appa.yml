@@ -1,0 +1,16 @@
+# Example APPCODE registry entry.
+# Copy this file to config/appcodes/<appcode>.yml and fill in your values.
+# This file must be reviewed and merged via a CODEOWNERS-gated PR.
+
+appcode: APPA
+sa_email: bq-migration-sa-appa@gcp-<org>-appa-qa-prj-01.iam.gserviceaccount.com
+wif_provider: projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/bq-migration-pool/providers/github-provider
+gha_environment: appa-migration   # GitHub Actions protected environment name
+
+allowed_source_projects:
+  - gcp-<org>-appa-prod-prj-01
+
+allowed_destination_projects:
+  - gcp-<org>-appa-qa-prj-01
+
+gcs_landing_bucket: gs://bq-migration-landing-appa/

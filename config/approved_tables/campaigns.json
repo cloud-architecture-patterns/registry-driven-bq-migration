@@ -1,0 +1,13 @@
+{
+  "dataset": "campaigns",
+  "appcode": "APPA",
+  "approved_tables": [
+    "audience_segments",
+    "campaign_targeting",
+    "ad_groups"
+  ],
+  "deny_tables": [
+    "pii_raw",
+    "user_identifiers"
+  ]
+}
